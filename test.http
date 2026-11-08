@@ -1,0 +1,22 @@
+### Создать нового исполнителя
+POST http://localhost:10000/api/artists
+Content-Type: application/json
+
+{
+  "name": "Eminem",
+  "country": "USA"
+}
+
+### Создать новый трек (ArtistId = 4)
+POST http://localhost:10000/api/tracks
+Content-Type: application/json
+
+{
+  "title": "Lose Yourself",
+  "durationSeconds": 326,
+  "artistId": 4,
+  "isAvailable": true
+}
+
+### Получить список всех треков (проверяем, добавился ли новый)
+GET http://localhost:10000/api/tracks
