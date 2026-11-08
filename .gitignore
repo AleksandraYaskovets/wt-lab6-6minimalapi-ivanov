@@ -1,3 +1,15 @@
+# Игнорируем служебные папки сборки
 bin/
 obj/
+
+# Игнорируем настройки VS Code
 .vscode/
+
+# Игнорируем локальные файлы с паролями
+appsettings.Development.json
+
+# Стандартные игнорируемые файлы Visual Studio / .NET
+*.user
+*.suo
+*.userosscache
+*.sln.docstates

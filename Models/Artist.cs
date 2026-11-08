@@ -1,4 +1,4 @@
-namespace wt_lab6_6minimalapi_ivanov.Models;
+namespace wt_lab7_7postgres_efcore_ivanov.Models;
 
 public class Artist
 {

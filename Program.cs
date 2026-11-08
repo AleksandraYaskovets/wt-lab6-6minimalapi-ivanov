@@ -1,60 +1,90 @@
-using wt_lab6_6minimalapi_ivanov.Models;
-using wt_lab6_6minimalapi_ivanov.Data;
+using wt_lab7_7postgres_efcore_ivanov.Models;
+using wt_lab7_7postgres_efcore_ivanov.Data;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Настройка OpenAPI
-builder.Services.AddOpenApi();
+// 1. Получаем строку подключения (для локальной разработки)
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+
+// 2. Проверяем наличие переменной Render (DATABASE_URL)
+var databaseUrl = builder.Configuration["DATABASE_URL"];
+
+if (!string.IsNullOrWhiteSpace(databaseUrl))
+{
+    // Заменяем postgresql:// на postgres://, чтобы C# правильно прочитал URL
+    databaseUrl = databaseUrl.Replace("postgresql://", "postgres://");
+    
+    var uri = new Uri(databaseUrl);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    
+    connectionString = $"Host={uri.Host};Port={uri.Port};Database={uri.AbsolutePath.TrimStart('/')};Username={userInfo[0]};Password={userInfo[1]};SSL Mode=Disable";
+}
+
+if (!string.IsNullOrWhiteSpace(databaseUrl))
+{
+    var uri = new Uri(databaseUrl);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    // Формируем строку подключения для облачной базы Render
+    connectionString = $"Host={uri.Host};Port={uri.Port};Database={uri.AbsolutePath.TrimStart('/')};Username={userInfo[0]};Password={userInfo[1]};SSL Mode=Disable";
+}
+
+// 3. Регистрируем DbContext
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(connectionString));
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+// 4. Автоматическое применение миграций при запуске
+using (var scope = app.Services.CreateScope())
 {
-    app.MapOpenApi();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.Migrate();
 }
 
 // --- БАЗОВЫЕ ЭНДПОИНТЫ ---
-app.MapGet("/", () => "Minimal API работает!");
-app.MapGet("/api/info", () => new { Application = "Music Streaming API", Version = "1.0" });
+app.MapGet("/", () => "Minimal API с PostgreSQL работает!");
+app.MapGet("/api/info", () => new { Application = "Music Streaming API (EF Core)", Version = "2.0" });
 
 // --- ЭНДПОИНТЫ ДЛЯ ИСПОЛНИТЕЛЕЙ (ARTISTS) ---
 
-// Получить всех исполнителей
-app.MapGet("/api/artists", () => Results.Ok(AppStore.Artists));
+// GET: Получить всех исполнителей
+app.MapGet("/api/artists", async (AppDbContext db) =>
+    await db.Artists.ToListAsync());
 
-// Добавить нового исполнителя (POST)
-app.MapPost("/api/artists", (Artist artist) =>
+// POST: Добавить исполнителя
+app.MapPost("/api/artists", async (Artist artist, AppDbContext db) =>
 {
-    artist.Id = AppStore.Artists.Any() ? AppStore.Artists.Max(a => a.Id) + 1 : 1;
-    AppStore.Artists.Add(artist);
+    db.Artists.Add(artist);
+    await db.SaveChangesAsync();
     return Results.Created($"/api/artists/{artist.Id}", artist);
 });
 
 
 // --- ЭНДПОИНТЫ ДЛЯ ТРЕКОВ (TRACKS) ---
 
-// 1. GET: Получить список треков (с фильтрацией по названию)
-app.MapGet("/api/tracks", (string? search) =>
+// GET: Список треков с фильтрацией по названию
+app.MapGet("/api/tracks", async (string? search, AppDbContext db) =>
 {
-    var tracks = AppStore.Tracks.AsEnumerable();
+    var query = db.Tracks.AsQueryable();
+    
     if (!string.IsNullOrWhiteSpace(search))
     {
-        tracks = tracks.Where(t => t.Title.Contains(search, StringComparison.OrdinalIgnoreCase));
+        query = query.Where(t => t.Title.ToLower().Contains(search.ToLower()));
     }
-    return Results.Ok(tracks);
+    
+    return Results.Ok(await query.ToListAsync());
 });
 
-// 2. GET: Получить трек по ID (с информацией об исполнителе!)
-app.MapGet("/api/tracks/{id}", (int id) =>
+// GET: Один трек по ID (с информацией об исполнителе)
+app.MapGet("/api/tracks/{id}", async (int id, AppDbContext db) =>
 {
-    var track = AppStore.Tracks.FirstOrDefault(t => t.Id == id);
+    var track = await db.Tracks.FindAsync(id);
     if (track == null) return Results.NotFound();
 
-    // Находим исполнителя для этого трека, чтобы вернуть красивые данные
-    var artist = AppStore.Artists.FirstOrDefault(a => a.Id == track.ArtistId);
-    
-    // Возвращаем анонимный объект, объединяющий данные трека и имя исполнителя
-    return Results.Ok(new 
+    var artist = await db.Artists.FindAsync(track.ArtistId);
+
+    return Results.Ok(new
     {
         track.Id,
         track.Title,
@@ -64,45 +94,57 @@ app.MapGet("/api/tracks/{id}", (int id) =>
     });
 });
 
-// 3. POST: Создать трек
-app.MapPost("/api/tracks", (Track newTrack) =>
+// POST: Создать новый трек
+app.MapPost("/api/tracks", async (Track newTrack, AppDbContext db) =>
 {
     // Проверка: существует ли исполнитель, на которого ссылается трек
-    if (!AppStore.Artists.Any(a => a.Id == newTrack.ArtistId))
+    if (!await db.Artists.AnyAsync(a => a.Id == newTrack.ArtistId))
         return Results.BadRequest("Исполнитель с таким ArtistId не найден.");
 
-    newTrack.Id = AppStore.Tracks.Any() ? AppStore.Tracks.Max(t => t.Id) + 1 : 1;
-    AppStore.Tracks.Add(newTrack);
+    db.Tracks.Add(newTrack);
+    await db.SaveChangesAsync();
+    
     return Results.Created($"/api/tracks/{newTrack.Id}", newTrack);
 });
 
-// 4. PUT: Обновить трек
-app.MapPut("/api/tracks/{id}", (int id, Track updatedTrack) =>
+// PUT: Обновить существующий трек
+app.MapPut("/api/tracks/{id}", async (int id, Track updatedTrack, AppDbContext db) =>
 {
-    var track = AppStore.Tracks.FirstOrDefault(t => t.Id == id);
+    var track = await db.Tracks.FindAsync(id);
     if (track == null) return Results.NotFound();
-    
-    if (!AppStore.Artists.Any(a => a.Id == updatedTrack.ArtistId))
-        return Results.BadRequest("Исполнитель с таким ArtistId не найден.");
 
+    // Обновляем поля
     track.Title = updatedTrack.Title;
     track.DurationSeconds = updatedTrack.DurationSeconds;
     track.ArtistId = updatedTrack.ArtistId;
     track.IsAvailable = updatedTrack.IsAvailable;
 
+    await db.SaveChangesAsync();
     return Results.Ok(track);
 });
 
-// 5. DELETE: Удалить трек
-app.MapDelete("/api/tracks/{id}", (int id) =>
+// DELETE: Удалить трек
+app.MapDelete("/api/tracks/{id}", async (int id, AppDbContext db) =>
 {
-    var track = AppStore.Tracks.FirstOrDefault(t => t.Id == id);
+    var track = await db.Tracks.FindAsync(id);
     if (track == null) return Results.NotFound();
 
-    AppStore.Tracks.Remove(track);
+    db.Tracks.Remove(track);
+    await db.SaveChangesAsync();
+    
     return Results.NoContent();
 });
 
-// Настройка порта для Render
+// --- ДОПОЛНИТЕЛЬНЫЕ LINQ-ЗАПРОСЫ ---
+
+// Получить только доступные треки, отсортированные по алфавиту
+app.MapGet("/api/tracks/available", async (AppDbContext db) =>
+    await db.Tracks.Where(t => t.IsAvailable).OrderBy(t => t.Title).ToListAsync());
+
+// Получить треки длиннее 5 минут (300 секунд)
+app.MapGet("/api/tracks/long", async (AppDbContext db) =>
+    await db.Tracks.Where(t => t.DurationSeconds > 300).ToListAsync());
+
+// --- ЗАПУСК ПРИЛОЖЕНИЯ (Для Render и локально) ---
 var port = Environment.GetEnvironmentVariable("PORT") ?? "10000";
 app.Run($"http://0.0.0.0:{port}");

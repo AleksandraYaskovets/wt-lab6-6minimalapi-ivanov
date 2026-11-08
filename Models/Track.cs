@@ -1,5 +1,4 @@
-namespace wt_lab6_6minimalapi_ivanov.Models;
-
+namespace wt_lab7_7postgres_efcore_ivanov.Models;
 public class Track
 {
     public int Id { get; set; }
@@ -10,4 +9,6 @@ public class Track
     public int ArtistId { get; set; } 
     
     public bool IsAvailable { get; set; } = true;
+    
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
